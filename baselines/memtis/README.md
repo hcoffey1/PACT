@@ -87,3 +87,22 @@ root after applying the patches:
 ```sh
 python3 tests/test-memtis-pte-allocation.py baselines/memtis/linux/arch/x86/mm/pgtable.c
 ```
+
+## Running workloads
+
+[`memtis-env.sh`](memtis-env.sh) sets up Memtis on the booted `5.15.19-htmm`
+kernel. Run [`../../setup/env/prepare_environment.sh`](../../setup/env/) once
+per boot first.
+
+```bash
+sudo ./memtis-env.sh setup                 # cxl mode, htmm_mode 2, cgroup "memtis" capped at 8G on node 0, PEBS sampling on
+sudo ./memtis-env.sh run -- numactl -C 2-9 -- <program> <args>
+sudo ./memtis-env.sh status
+sudo ./memtis-env.sh teardown              # cgroup must be empty
+```
+
+`MEMTIS_FAST` sets the fast-tier cap (`memory.max_at_node0`, default `8G`),
+`MEMTIS_CG` the cgroup name, `MEMTIS_MODE` the `htmm_mode`. `htmm_cxl_mode`
+must be `enabled` on a two-node host: without it, Memtis expects NVM nodes 2
+and 3. Sampling (`ksamplingd`) is system-wide; its statistics go to `dmesg`
+at teardown.
