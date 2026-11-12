@@ -37,14 +37,14 @@ sudo dnf install git gcc make bc bison flex elfutils-libelf-devel openssl-devel 
 
 ## Usage
 
-Memtis builds via `setup_memtis.sh` (not `compile.sh`). The script expects the
-kernel tree at `./linux`; `v5.15.19` is a **stable** point release, so clone the
-`linux-stable` tree (not `torvalds/linux`). The kernel install below needs root:
+Memtis builds via `setup_memtis.sh` (not `compile.sh`). The script clones the
+kernel tree into `./linux` itself; `v5.15.19` is a **stable** point release, so
+it comes from `linux-stable` (not `torvalds/linux`). The build does not need
+root; only the install below does:
 
 ```bash
 cd memtis
-git clone https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux
-sudo ./setup_memtis.sh   # checks out tag v5.15.19
+./setup_memtis.sh
 ```
 
 The script will:
@@ -58,7 +58,13 @@ The script will:
 7. Force `CONFIG_INTEL_UNCORE_FREQ_CONTROL=y` (built-in `*`)
 8. Build with `make -j$(nproc)`
 
-If the repo is already present the clone step is skipped automatically.
+If the repo is already present the clone step is skipped automatically. The
+patch steps fail on a tree that is already patched, so before you re-run the
+script, reset the tree:
+
+```bash
+git -C linux checkout -f v5.15.19 && git -C linux clean -fdx
+```
 
 ---
 
@@ -68,6 +74,7 @@ If the repo is already present the clone step is skipped automatically.
 cd linux
 sudo make modules_install
 sudo make install
+sudo update-grub   # make sure GRUB boots 5.15.19-htmm
 sudo reboot
 ```
 
