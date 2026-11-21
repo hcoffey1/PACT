@@ -13,12 +13,17 @@
 #
 # Environment: MEMTIS_CG (cgroup name, default memtis), MEMTIS_FAST (fast-tier
 # cap, memory.max_at_node0, default 8G), MEMTIS_MODE (htmm_mode, default 2 =
-# HUGEPAGE_OPT, the only mode the patch marks as used).
+# HUGEPAGE_OPT, the only mode the patch marks as used), MEMTIS_CPUS (CPUs for
+# ksamplingd/kmigraterd*, default 2,4; empty = unpinned).
 set -euo pipefail
 
 CG=/sys/fs/cgroup/${MEMTIS_CG:-memtis}
 FAST=${MEMTIS_FAST:-8G}
 MODE=${MEMTIS_MODE:-2}
+# CPUs for Memtis's kernel threads, kept off the workload's CPUs (as ARMS's
+# threads are on 2 and 4); empty leaves them on any node-0 CPU.
+KCPUS=${MEMTIS_CPUS-2,4}
+KTHREADS="ksamplingd kmigraterd0 kmigraterd1"
 HTMM=/sys/kernel/mm/htmm
 SYS_HTMM_START=449 # arch/x86/entry/syscalls/syscall_64.tbl of memtis.patch
 SYS_HTMM_END=450
@@ -59,7 +64,19 @@ setup() {
         sleep 1
         sampling || die "ksamplingd did not start; see dmesg | grep -i htmm"
     fi
+    pin_threads
     status
+}
+
+# The threads set their CPUs once, at start (set_cpus_allowed_ptr, not
+# kthread_bind), so this sticks until they are restarted by the next setup.
+pin_threads() {
+    [[ -n $KCPUS ]] || return 0
+    local t pid
+    for t in $KTHREADS; do
+        pid=$(pgrep -x "$t") || die "$t is not running"
+        taskset -pc "$KCPUS" "$pid" > /dev/null || die "cannot pin $t to CPUs $KCPUS"
+    done
 }
 
 run() {
@@ -80,6 +97,10 @@ status() {
     echo "THP:           $(</sys/kernel/mm/transparent_hugepage/enabled)"
     echo "ksamplingd:    $(sampling && echo running || echo stopped)"
     echo "kmigraterd:    $(pgrep -l kmigraterd | awk '{print $2}' | xargs)"
+    local t pid
+    for t in $KTHREADS; do
+        pid=$(pgrep -x "$t") && echo "  $t cpus: $(taskset -pc "$pid" | awk -F': ' '{print $2}')"
+    done
     if [[ -d $CG ]]; then
         echo "cgroup:        $CG"
         echo "  htmm:        $(<"$CG/memory.htmm_enabled")"
@@ -108,5 +129,5 @@ teardown() {
 case ${1-} in
 setup | status | teardown) "$1" ;;
 run) shift; run "$@" ;;
-*) sed -n '2,16p' "$0"; exit 1 ;;
+*) sed -n '2,17p' "$0"; exit 1 ;;
 esac
