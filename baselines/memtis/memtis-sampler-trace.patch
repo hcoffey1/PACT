@@ -1,0 +1,112 @@
+--- a/mm/htmm_sampler.c
++++ b/mm/htmm_sampler.c
+@@ -16,6 +16,40 @@
+ struct task_struct *access_sampling = NULL;
+ struct perf_event ***mem_event;
+ 
++/* Diagnostic trace (memtis-sampler-trace.patch): per-CPU, per-event PEBS
++ * state every HTMM_DBG_MS, to find which events stop delivering samples. */
++#define HTMM_DBG_MS 2000
++#define HTMM_DBG_MAX_ANOMALIES 50
++static unsigned long *htmm_dbg_read; /* [cpu * N_HTMMEVENTS + event] */
++static unsigned long htmm_dbg_anomalies;
++
++static void htmm_dbg_dump(void)
++{
++    int cpu, event;
++
++    for_each_online_cpu (cpu) {
++	for (event = 0; event < N_HTMMEVENTS; event++) {
++	    struct perf_event *e = mem_event[cpu][event];
++	    struct perf_buffer *rb;
++
++	    if (!e)
++		continue;
++	    rb = e->rb;
++	    if (!rb) {
++		trace_printk("htmm_dbg cpu=%d ev=%d state=%d rb=NULL\n", cpu, event, e->state);
++		continue;
++	    }
++	    trace_printk("htmm_dbg cpu=%d ev=%d state=%d count=%llu intr=%llu head=%llu tail=%llu "
++			 "size=%lu lost=%ld period=%llu read=%lu idx=%d enabled=%llu running=%llu\n",
++			 cpu, event, e->state, (u64)local64_read(&e->count), (u64)e->hw.interrupts,
++			 (u64)READ_ONCE(rb->user_page->data_head), (u64)READ_ONCE(rb->user_page->data_tail),
++			 perf_data_size(rb), local_read(&rb->lost), (u64)e->hw.sample_period,
++			 htmm_dbg_read ? htmm_dbg_read[cpu * N_HTMMEVENTS + event] : 0,
++			 e->hw.idx, e->total_time_enabled, e->total_time_running);
++	}
++    }
++}
++
+ static bool valid_va(unsigned long addr)
+ {
+     if (!(addr >> (PGDIR_SHIFT + 9)) && addr != 0)
+@@ -104,6 +138,9 @@
+     for_each_online_cpu (cpu) {
+ 	mem_event[cpu] = kzalloc(sizeof(struct perf_event *) * N_HTMMEVENTS, GFP_KERNEL);
+     }
++    kfree(htmm_dbg_read);
++    htmm_dbg_read = kcalloc(nr_cpu_ids * N_HTMMEVENTS, sizeof(*htmm_dbg_read), GFP_KERNEL);
++    htmm_dbg_anomalies = 0;
+     
+     printk("pebs_init\n");
+ 
+@@ -216,6 +253,7 @@
+     unsigned long trace_cputime, trace_period = msecs_to_jiffies(1500); // 3s
+     unsigned long trace_runtime;
+     unsigned long rearm_last = jiffies;
++    unsigned long dbg_last = jiffies;
+     /* for timeout */ 
+     unsigned long sleep_timeout;
+ 
+@@ -268,6 +306,10 @@
+ 		    /* perf_buffer is ring buffer */
+ 		    up = READ_ONCE(rb->user_page);
+ 		    head = READ_ONCE(up->data_head);
++		    if ((s64)(head - up->data_tail) < 0 &&
++			htmm_dbg_anomalies++ < HTMM_DBG_MAX_ANOMALIES)
++			trace_printk("htmm_dbg ANOMALY cpu=%d ev=%d tail=%llu ahead of head=%llu\n",
++				     cpu, event, (u64)up->data_tail, (u64)head);
+ 		    if (head == up->data_tail) {
+ 			if (cpu < 16)
+ 			    nr_skip++;
+@@ -294,6 +336,8 @@
+ 		    ph = (void*)(rb->data_pages[pg_index] + offset);
+ 		    switch (ph->type) {
+ 			case PERF_RECORD_SAMPLE:
++			    if (htmm_dbg_read)
++				htmm_dbg_read[cpu * N_HTMMEVENTS + event]++;
+ 			    he = (struct htmm_event *)ph;
+ 			    if (!valid_va(he->addr)) {
+ 				break;
+@@ -334,6 +378,10 @@
+ 		    }
+ 		    /* read, write barrier */
+ 		    smp_mb();
++		    if ((ph->size == 0 || (ph->size & 7)) &&
++			htmm_dbg_anomalies++ < HTMM_DBG_MAX_ANOMALIES)
++			trace_printk("htmm_dbg ANOMALY cpu=%d ev=%d record type=%u size=%u at tail=%llu\n",
++				     cpu, event, ph->type, ph->size, (u64)up->data_tail);
+ 		    WRITE_ONCE(up->data_tail, up->data_tail + ph->size);
+ 		} while (cond);
+ 	    }
+@@ -405,12 +453,18 @@
+ 	    trace_cputime = cur;
+ 	    trace_runtime = cur_runtime;
+ 	}
++
++	if (cur - dbg_last >= msecs_to_jiffies(HTMM_DBG_MS)) {
++	    htmm_dbg_dump();
++	    dbg_last = cur;
++	}
+     }
+ 
+     total_runtime = (t->se.sum_exec_runtime) - total_runtime; // ns
+     total_cputime = jiffies_to_usecs(jiffies - total_cputime); // us
+ 
+-    printk("nr_sampled: %llu, nr_throttled: %llu, nr_lost: %llu\n", nr_sampled, nr_throttled, nr_lost);
++    printk("nr_sampled: %llu, nr_throttled: %llu, nr_lost: %llu, nr_unknown: %llu\n",
++	   nr_sampled, nr_throttled, nr_lost, nr_unknown);
+     printk("total runtime: %llu ns, total cputime: %lu us, cpu usage: %llu\n",
+ 	    total_runtime, total_cputime, (total_runtime) / total_cputime);
+ 

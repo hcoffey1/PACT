@@ -86,6 +86,10 @@ uname -r
 
 ## Build patches
 
+`memtis-sampler-trace.patch` is an optional diagnostic patch, not applied by
+`setup_memtis.sh`: apply it after the others to log each CPU's PEBS event state
+(`htmm_dbg` lines in `/sys/kernel/debug/tracing/trace`) every 2 s.
+
 `memtis-vmstat.patch` makes the build work without memory-balloon support.
 `memtis-pte-allocation.patch` checks the result of a page-table allocation
 before Memtis uses it. `memtis-c6420.patch` sizes the sampler's per-CPU
