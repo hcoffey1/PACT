@@ -7,8 +7,9 @@
 #   sudo ./memtis-env.sh status
 #   sudo ./memtis-env.sh teardown           # stop sampling, remove the cgroup
 #
-# Run ../../setup/env/prepare_environment.sh once per boot first (node-1 CPUs
-# offline, SMT/THP/KSM/NUMA balancing off). setup checks that it ran.
+# Run ../../setup/env/prepare_environment.sh (or tiering_solutions' onboot.sh,
+# which keeps one node-1 CPU online) once per boot first. setup checks that
+# node 1 has at most one online CPU.
 #
 # Environment: MEMTIS_CG (cgroup name, default memtis), MEMTIS_FAST (fast-tier
 # cap, memory.max_at_node0, default 8G), MEMTIS_MODE (htmm_mode, default 2 =
@@ -32,8 +33,12 @@ syscall() { perl -e 'my ($n, @a) = map { $_ + 0 } @ARGV; exit(syscall($n, @a) ==
 check_host() {
     [[ $EUID -eq 0 ]] || die "run as root"
     [[ -d $HTMM ]] || die "no $HTMM: not the Memtis kernel ($(uname -r))"
-    [[ -z $(numactl --hardware | awk -F: '/^node 1 cpus/ {gsub(/ /,"",$2); print $2}') ]] ||
-        die "node 1 has online CPUs: run setup/env/prepare_environment.sh first"
+    # At most one node-1 CPU may stay online: tiering_solutions' onboot.sh keeps
+    # one so the socket-1 uncore IMC (bandwidth) counters stay readable.
+    local n1
+    n1=$(numactl --hardware | awk '/^node 1 cpus:/ {print NF - 3}')
+    [[ ${n1:-0} -le 1 ]] ||
+        die "node 1 has $n1 online CPUs (max 1): run setup/env/prepare_environment.sh or tiering_solutions/scripts/onboot.sh first"
 }
 
 setup() {
@@ -103,5 +108,5 @@ teardown() {
 case ${1-} in
 setup | status | teardown) "$1" ;;
 run) shift; run "$@" ;;
-*) sed -n '2,15p' "$0"; exit 1 ;;
+*) sed -n '2,16p' "$0"; exit 1 ;;
 esac
