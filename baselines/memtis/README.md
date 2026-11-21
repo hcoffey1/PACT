@@ -10,7 +10,7 @@ This folder builds the Memtis kernel used as a baseline in PACT evaluation. Memt
 |------|---------|
 | `setup_memtis.sh` | One-shot build script - clone, patch, configure, compile |
 | `memtis.patch` | Memtis patch applied to clean Linux v5.15.19 |
-| `memtis-vmstat.patch`, `memtis-pte-allocation.patch` | Build patches applied after `memtis.patch` (see [Build patches](#build-patches)) |
+| `memtis-vmstat.patch`, `memtis-pte-allocation.patch`, `memtis-c6420.patch` | Build patches applied after `memtis.patch` (see [Build patches](#build-patches)) |
 | `config` | Base `.config` used as the starting configuration |
 
 ---
@@ -88,7 +88,17 @@ uname -r
 
 `memtis-vmstat.patch` makes the build work without memory-balloon support.
 `memtis-pte-allocation.patch` checks the result of a page-table allocation
-before Memtis uses it. To test the second patch, run from the repository
+before Memtis uses it. `memtis-c6420.patch` sizes the sampler's per-CPU
+event table by `nr_cpu_ids` instead of the online-CPU count (c6420's CPU ids
+are not contiguous, so the old size overflowed) and sets the split model's
+DRAM/CXL latencies to the 100/258 ns measured on c6420. It also fixes two
+LRU-accounting bugs: the PMD split no longer flips a still-compound THP's
+PG_active per subpage (that left the THP on the wrong LRU list and underflowed
+`lru_size`), and the deferred-split scan uses each page's own lruvec. Finally, `ksamplingd` re-arms every PEBS event once a second
+(`pebs_rearm()`, via `perf_event_period()` with the unchanged period). This is
+a departure from stock Memtis: on c6420, a read event's auto-reload counter
+could overflow without writing a PEBS record, after which it kept counting
+from 0 but never sampled again, stalling recovery after a hot-set change. To test the second patch, run from the repository
 root after applying the patches:
 
 ```sh

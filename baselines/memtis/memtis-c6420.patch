@@ -1,0 +1,110 @@
+--- a/mm/htmm_sampler.c
++++ b/mm/htmm_sampler.c
+@@ -98,7 +98,9 @@
+ {
+     int cpu, event;
+ 
+-    mem_event = kzalloc(sizeof(struct perf_event **) * num_online_cpus(), GFP_KERNEL);
++    /* Indexed by CPU id, which can exceed the online count (e.g. c6420's
++     * even-only node-0 ids with node-1 CPUs offline). */
++    mem_event = kzalloc(sizeof(struct perf_event **) * nr_cpu_ids, GFP_KERNEL);
+     for_each_online_cpu (cpu) {
+ 	mem_event[cpu] = kzalloc(sizeof(struct perf_event *) * N_HTMMEVENTS, GFP_KERNEL);
+     }
+@@ -179,6 +181,22 @@
+     }
+ }
+ 
++/* c6420: a PEBS auto-reload counter can overflow without writing a record
++ * (likely when a PMI freezes the PMU and acks the overflow first); it then
++ * counts up from 0 and never samples again, while perf still shows it active.
++ * perf_event_period() stops and restarts the event with a reload, re-arming it. */
++#define HTMM_REARM_MS 1000
++static void pebs_rearm(void)
++{
++    int cpu, event;
++
++    for_each_online_cpu (cpu)
++	for (event = 0; event < N_HTMMEVENTS; event++)
++	    if (mem_event[cpu][event])
++		perf_event_period(mem_event[cpu][event],
++				  mem_event[cpu][event]->attr.sample_period);
++}
++
+ static int ksamplingd(void *data)
+ {
+     unsigned long long nr_sampled = 0, nr_dram = 0, nr_nvm = 0, nr_write = 0;
+@@ -197,6 +215,7 @@
+     /* report cpu/period stat */
+     unsigned long trace_cputime, trace_period = msecs_to_jiffies(1500); // 3s
+     unsigned long trace_runtime;
++    unsigned long rearm_last = jiffies;
+     /* for timeout */ 
+     unsigned long sleep_timeout;
+ 
+@@ -319,6 +338,11 @@
+ 		} while (cond);
+ 	    }
+ 	}
++	if (jiffies - rearm_last >= msecs_to_jiffies(HTMM_REARM_MS)) {
++	    pebs_rearm();
++	    rearm_last = jiffies;
++	}
++
+ 	/* if ksampled_soft_cpu_quota is zero, disable dynamic pebs feature */
+ 	if (!ksampled_soft_cpu_quota)
+ 	    continue;
+--- a/include/linux/htmm.h
++++ b/include/linux/htmm.h
+@@ -23,9 +23,11 @@
+ #define HTMM_HUGEPAGE_OPT_V2	0x3 /* unused */
+ 
+ /**/
+-#define DRAM_ACCESS_LATENCY 80
++/* ns. DRAM and CXL are MLC idle latencies measured on c6420 (2026-11-16):
++ * node 0 = 100.0, node 1 (remote DRAM, uncore pinned at 700 MHz) = 258.2. */
++#define DRAM_ACCESS_LATENCY 100
+ #define NVM_ACCESS_LATENCY  270
+-#define CXL_ACCESS_LATENCY  170
++#define CXL_ACCESS_LATENCY  258
+ #define DELTA_CYCLES	(NVM_ACCESS_LATENCY - DRAM_ACCESS_LATENCY)
+ 
+ #define pcount 30
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -2152,10 +2152,11 @@
+ 		pte_pginfo->total_accesses = tail_pginfo->total_accesses;
+ 		pte_pginfo->cooling_clock = tail_pginfo->cooling_clock;
+ 		
+-		if (get_idx(pte_pginfo->total_accesses) >= (memcg->active_threshold - 1))
+-		    SetPageActive(&page[i]);
+-		else
+-		    ClearPageActive(&page[i]);
++		/* No per-subpage PG_active here: the page is still compound, so
++		 * Set/ClearPageActive on a tail flips the head's flag while the
++		 * THP stays on its LRU list, and the next removal debits the
++		 * wrong list (lru_size underflow). The tails inherit the head's
++		 * flag when the page itself is split. */
+ 
+ 		spin_lock(&memcg->access_lock);
+ 		memcg->hotness_hg[get_idx(pte_pginfo->total_accesses)]++;
+--- a/mm/htmm_core.c
++++ b/mm/htmm_core.c
+@@ -411,7 +411,7 @@
+ 
+     list_for_each_safe(pos, next, &list) {
+ 	LIST_HEAD(tmp);
+-	struct lruvec *lruvec = mem_cgroup_page_lruvec(page);
++	struct lruvec *lruvec;
+ 	bool skip_iso = false;
+ 
+ 	if (split >= nr_max)
+@@ -419,6 +419,8 @@
+ 
+ 	page = list_entry((void *)pos, struct page, deferred_list);
+ 	page = compound_head(page);
++	/* This page's lruvec, not the previous iteration's. */
++	lruvec = mem_cgroup_page_lruvec(page);
+ 
+ 	if (!PageLRU(page)) {
+ 	    skip_iso = true;
