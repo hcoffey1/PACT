@@ -1,0 +1,32 @@
+Memtis: guard the toptier-demotion underflow and make the demotion scan preemptible.
+
+need_toptier_demotion() triggers on the demotion watermark (2%, floor 50 MB) but sizes the
+demotion with the promotion watermark, whose floor returns MIN_WATERMARK_LOWER_LIMIT (50 MB).
+For a fast tier of ~2.44-3.26 GiB the demotion watermark exceeds the promotion watermark, the
+unsigned nr_exceeded wraps to ~2^64, and demote_lruvec() spins on empty LRU lists with no
+yield: soft lockup in kmigraterd0, RCU stall, kthread_stop() hangs (16 G @ 20%, 2026-11-18).
+The guard never fires outside that band, so behavior elsewhere is unchanged.
+Apply after memtis.patch and memtis-c6420.patch:  git apply memtis-watermark-underflow.patch
+
+--- a/mm/htmm_migrater.c	2026-11-18 16:21:10.379190150 +0000
++++ b/mm/htmm_migrater.c	2026-11-18 16:21:20.387219619 +0000
+@@ -171,6 +171,9 @@
+ 	    return false;
+     }
+ 
++    /* min_wm can exceed max_wm (fast tier ~2.44-3.26 GiB): nothing to demote, don't underflow */
++    if (nr_lru_pages + nr_need_promoted + fasttier_max_watermark <= max_nr_pages)
++	return false;
+     *nr_exceeded = nr_lru_pages + nr_need_promoted + fasttier_max_watermark - max_nr_pages;
+     return true;
+ }
+@@ -560,6 +563,9 @@
+ 	    nr_to_scan -= (long)scan;
+ 	    if (nr_reclaimed >= nr_to_reclaim)
+ 		break;
++	    cond_resched();		/* empty-list steps never reach shrink_page_list()'s yield */
++	    if (kthread_should_stop())	/* let memtis-env teardown stop us */
++		break;
+ 	}
+ 
+ 	if (nr_reclaimed >= nr_to_reclaim)

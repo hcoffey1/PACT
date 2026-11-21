@@ -10,7 +10,7 @@ This folder builds the Memtis kernel used as a baseline in PACT evaluation. Memt
 |------|---------|
 | `setup_memtis.sh` | One-shot build script - clone, patch, configure, compile |
 | `memtis.patch` | Memtis patch applied to clean Linux v5.15.19 |
-| `memtis-vmstat.patch`, `memtis-pte-allocation.patch`, `memtis-c6420.patch` | Build patches applied after `memtis.patch` (see [Build patches](#build-patches)) |
+| `memtis-vmstat.patch`, `memtis-pte-allocation.patch`, `memtis-c6420.patch`, `memtis-watermark-underflow.patch` | Build patches applied after `memtis.patch` (see [Build patches](#build-patches)) |
 | `config` | Base `.config` used as the starting configuration |
 
 ---
@@ -98,7 +98,9 @@ PG_active per subpage (that left the THP on the wrong LRU list and underflowed
 (`pebs_rearm()`, via `perf_event_period()` with the unchanged period). This is
 a departure from stock Memtis: on c6420, a read event's auto-reload counter
 could overflow without writing a PEBS record, after which it kept counting
-from 0 but never sampled again, stalling recovery after a hot-set change. To test the second patch, run from the repository
+from 0 but never sampled again, stalling recovery after a hot-set change. `memtis-watermark-underflow.patch` stops the demotion size
+from underflowing when the fast tier is ~2.44-3.26 GiB (e.g. 16 G at 20% fast),
+which soft-locked kmigraterd0. To test the second patch, run from the repository
 root after applying the patches:
 
 ```sh

@@ -56,6 +56,7 @@ echo "    Patch applied successfully."
 git apply "$SCRIPT_DIR/memtis-vmstat.patch"
 git apply "$SCRIPT_DIR/memtis-pte-allocation.patch"
 git apply "$SCRIPT_DIR/memtis-c6420.patch"
+git apply "$SCRIPT_DIR/memtis-watermark-underflow.patch"  # 16 G @ 20% kmigraterd soft lockup (2026-11-18)
 bash "$SCRIPT_DIR/../common/apply-build-fixes.sh" "$KERNEL_DIR"
 
 # ---------------------------------------------------------------------------
