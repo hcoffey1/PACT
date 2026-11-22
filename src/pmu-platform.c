@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* Copyright (c) 2026 MoatLab, Virginia Tech. */
 
+#include <unistd.h>
 #include <stdio.h>
 #include <cpuid.h>
 
@@ -13,6 +14,24 @@ pmu_platform_t g_pmu_platform;
 /* Skylake Xeon CHA-to-core mapping (CloudLab c220g5) */
 static const int skx_cha_to_core_map[10] = {2, 3, 4, 5, 6, 7, 8, 9, 0, 1};
 static const int skx_core_to_tid[10] = {0x00, 0x10, 0x20, 0x30, 0x40, 0x08, 0x18, 0x28, 0x38, 0x48};
+
+/*
+ * Skylake Xeon Gold 6142 (CloudLab c6420): 16 CHAs per socket, SMT off, and
+ * node-0 CPUs are the even Linux CPUs 0-30, so both tables are sized by Linux
+ * CPU (31). TIDs measured 2026-11-19 (TOR_OCCUPANCY.IA_MISS DRD, one pinned
+ * miss stream per CPU): APIC 0-14 -> APIC*8, APIC 16-30 -> (APIC-16)*8 + 8.
+ * CHAs are picked by address hash, so each CHA sees ~1/16 of every core's
+ * traffic and any one-to-one CHA->CPU pairing is valid: CHA i -> CPU 2i.
+ * -1 = no such CHA / CPU not on node 0.
+ */
+static const int c6420_cha_to_core_map[31] = {0,  2,  4,  6,  8,  10, 12, 14, 16, 18, 20,
+                                              22, 24, 26, 28, 30, -1, -1, -1, -1, -1, -1,
+                                              -1, -1, -1, -1, -1, -1, -1, -1, -1};
+static const int c6420_core_to_tid[31] = {
+    /* cpu0 */ 0x00, -1, /* cpu2 */ 0x70, -1, /* cpu4 */ 0x10, -1, /* cpu6 */ 0x60, -1,
+    /* cpu8 */ 0x20, -1, /* cpu10 */ 0x50, -1, /* cpu12 */ 0x30, -1, /* cpu14 */ 0x40, -1,
+    /* cpu16 */ 0x08, -1, /* cpu18 */ 0x78, -1, /* cpu20 */ 0x18, -1, /* cpu22 */ 0x68, -1,
+    /* cpu24 */ 0x28, -1, /* cpu26 */ 0x58, -1, /* cpu28 */ 0x38, -1, /* cpu30 */ 0x48};
 
 /*
  * Sapphire/Emerald Rapids CHA-to-core mapping. Both uarchs share the same
@@ -169,6 +188,13 @@ int pmu_platform_init(void)
         break;
     }
     g_pmu_platform = *src;
+    /* shortcut: any 16-CHA Skylake-SP gets the c6420 tables; another 16-core SKX host needs its own measured table. */
+    if (id == PMU_PLATFORM_SKX && access("/sys/devices/uncore_cha_15", F_OK) == 0) {
+        g_pmu_platform.name = "Skylake-X (Gold 6142, c6420)";
+        g_pmu_platform.nr_cha_mapping = 31;
+        g_pmu_platform.cha_to_core_map = c6420_cha_to_core_map;
+        g_pmu_platform.core_to_tid = c6420_core_to_tid;
+    }
     if (id == PMU_PLATFORM_UNKNOWN) {
         g_pmu_platform.id = PMU_PLATFORM_UNKNOWN;
         g_pmu_platform.name = "Unknown (SKX fallback)";

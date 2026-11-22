@@ -1796,7 +1796,7 @@ static int check_tid_table(const pact_context_t *pact)
         const pact_workload_t *wl = &pact->workloads[w];
         for (int c = 0; c < wl->nr_target_cpus; c++) {
             int cpu = wl->target_cpus[c];
-            if (cpu >= g_pmu_platform.nr_cha_mapping) {
+            if (cpu >= g_pmu_platform.nr_cha_mapping || g_pmu_platform.core_to_tid[cpu] < 0) {
                 log_error("pact_init",
                           "Workload %d: CPU %d has no entry in the %s TID table (CPUs 0-%d); "
                           "Tierce mode cannot measure its MLP",
